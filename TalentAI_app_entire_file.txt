@@ -1,0 +1,1634 @@
+import os
+import uuid
+import html
+import pandas as pd
+import streamlit as st
+
+from SRC.ui import (
+    apply_premium_theme,
+    render_sidebar
+)
+
+from SRC.resume_parser import (
+    extract_resume_text,
+    extract_candidate_details
+)
+
+from SRC.text_cleaner import clean_resume_text
+from SRC.skill_extractor import extract_skills
+
+from SRC.database import (
+    save_candidate,
+    save_resume,
+    save_candidate_skills,
+    get_dashboard_metrics,
+    save_match_result,
+    get_recent_screenings,
+    save_job_description,
+    get_job_descriptions,
+    get_candidates_by_job
+)
+
+from SRC.job_matcher import calculate_skill_match
+
+
+# ==========================================
+# PAGE CONFIGURATION
+# ==========================================
+
+st.set_page_config(
+    page_title="TalentAI | Resume Intelligence",
+    page_icon="🤖",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+apply_premium_theme()
+render_sidebar()
+
+
+# ==========================================
+# NAVIGATION CALLBACK
+# ==========================================
+
+def navigate_to(page):
+    st.session_state["main_navigation"] = page
+
+
+# ==========================================
+# NAVIGATION
+# ==========================================
+
+with st.sidebar:
+
+    st.markdown(
+        """
+        <div style="
+            color:#64748B;
+            font-size:10px;
+            font-weight:800;
+            letter-spacing:1.8px;
+            margin:12px 0 8px 5px;
+        ">
+            MAIN MENU
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    selected_page = st.radio(
+        "Navigation",
+        [
+            "Dashboard",
+            "Resume Screening",
+            "Job Management",
+            "Candidate Ranking",
+            "Screening History"
+        ],
+        label_visibility="collapsed",
+        format_func=lambda page: {
+            "Dashboard": "🏠  Dashboard",
+            "Resume Screening": "📄  Resume Screening",
+            "Job Management": "💼  Job Management",
+            "Candidate Ranking": "🏆  Candidate Ranking",
+            "Screening History": "🕘  Screening History"
+        }[page],
+        key="main_navigation"
+    )
+
+    st.divider()
+
+
+# ==========================================
+# LOAD APPLICATION DATA
+# ==========================================
+
+try:
+    saved_jobs = get_job_descriptions() or []
+except Exception as error:
+    saved_jobs = []
+    st.error(f"Unable to fetch saved jobs: {error}")
+
+
+try:
+    (
+        total_candidates,
+        total_resumes,
+        average_match_score
+    ) = get_dashboard_metrics()
+
+except Exception as error:
+    total_candidates = 0
+    total_resumes = 0
+    average_match_score = 0
+    st.error(f"Unable to load dashboard metrics: {error}")
+
+
+# ==========================================
+# REUSABLE FUNCTIONS
+# ==========================================
+
+def render_page_header(eyebrow, title, subtitle):
+
+    st.html(f"""
+    <div style="
+        margin-bottom:28px;
+        padding-bottom:18px;
+        border-bottom:1px solid rgba(167,139,250,0.15);
+    ">
+        <div style="
+            color:#A78BFA;
+            font-size:10px;
+            font-weight:800;
+            letter-spacing:2px;
+            margin-bottom:9px;
+        ">
+            {html.escape(eyebrow.upper())}
+        </div>
+
+        <div style="
+            color:#F8FAFC;
+            font-size:32px;
+            font-weight:850;
+            letter-spacing:-1px;
+        ">
+            {html.escape(title)}
+        </div>
+
+        <div style="
+            color:#94A3B8;
+            font-size:13px;
+            margin-top:8px;
+        ">
+            {html.escape(subtitle)}
+        </div>
+    </div>
+    """)
+
+
+def render_job_selector(key):
+
+    if not saved_jobs:
+        st.warning("Please create a job description first.")
+        return None
+
+    return st.selectbox(
+        "Select Job Description",
+        options=saved_jobs,
+        format_func=lambda job: (
+            f"{job[1]} | {job[2]}-{job[3]} Years"
+        ),
+        key=key
+    )
+
+
+# ==========================================
+# DASHBOARD PAGE
+# ==========================================
+
+if selected_page == "Dashboard":
+
+    # WELCOME HEADER
+
+    st.html("""
+    <div style="
+        position:relative;
+        overflow:hidden;
+        padding:34px;
+        border-radius:22px;
+        border:1px solid rgba(167,139,250,0.25);
+        background:
+            radial-gradient(
+                circle at 85% 20%,
+                rgba(139,92,246,0.28),
+                transparent 35%
+            ),
+            linear-gradient(115deg,#191633,#11182D);
+        margin-bottom:28px;
+    ">
+
+        <div style="
+            color:#A78BFA;
+            font-size:10px;
+            font-weight:800;
+            letter-spacing:2px;
+        ">
+            TALENTAI / RECRUITMENT INTELLIGENCE
+        </div>
+
+        <div style="
+            color:#FFFFFF;
+            font-size:35px;
+            font-weight:850;
+            letter-spacing:-1.3px;
+            margin-top:13px;
+        ">
+            Welcome to TalentAI
+        </div>
+
+        <div style="
+            color:#A5B4CC;
+            font-size:14px;
+            margin-top:10px;
+            max-width:600px;
+            line-height:1.8;
+        ">
+            Your intelligent recruitment workspace.
+            Analyze resumes, evaluate candidate skills
+            and discover the right talent.
+        </div>
+
+        <div style="
+            display:flex;
+            align-items:center;
+            gap:8px;
+            margin-top:22px;
+        ">
+            <span style="color:#4ADE80;font-size:12px;">●</span>
+            <span style="
+                color:#86EFAC;
+                font-size:11px;
+                font-weight:800;
+                letter-spacing:1px;
+            ">
+                AI ENGINE ONLINE
+            </span>
+        </div>
+    </div>
+    """)
+
+    # KPI CARDS
+
+    st.markdown("### Overview")
+
+    kpi1, kpi2, kpi3, kpi4 = st.columns(4, gap="medium")
+
+    with kpi1:
+        with st.container(border=True):
+            st.caption("TOTAL CANDIDATES")
+            st.markdown(
+                f"<h2 style='color:#C4B5FD;margin:0'>{total_candidates}</h2>",
+                unsafe_allow_html=True
+            )
+            st.caption("Registered profiles")
+
+    with kpi2:
+        with st.container(border=True):
+            st.caption("RESUMES ANALYZED")
+            st.markdown(
+                f"<h2 style='color:#93C5FD;margin:0'>{total_resumes}</h2>",
+                unsafe_allow_html=True
+            )
+            st.caption("Uploaded documents")
+
+    with kpi3:
+        with st.container(border=True):
+            st.caption("AVERAGE MATCH SCORE")
+            st.markdown(
+                f"<h2 style='color:#86EFAC;margin:0'>{float(average_match_score or 0):.2f}%</h2>",
+                unsafe_allow_html=True
+            )
+            st.caption("Candidate compatibility")
+
+    with kpi4:
+        with st.container(border=True):
+            st.caption("ACTIVE JOB DESCRIPTIONS")
+            st.markdown(
+                f"<h2 style='color:#FCD34D;margin:0'>{len(saved_jobs)}</h2>",
+                unsafe_allow_html=True
+            )
+            st.caption("Available recruitment roles")
+
+    # RECENT SCREENING DATA
+
+    recent_screenings = get_recent_screenings(limit=10) or []
+
+    # RECRUITMENT ANALYTICS
+
+    st.markdown("")
+    st.markdown("### Recruitment Analytics")
+
+    analytics_col, insights_col = st.columns(
+        [1.7, 1],
+        gap="large"
+    )
+
+    with analytics_col:
+
+        with st.container(border=True):
+
+            st.markdown("#### Screening Performance")
+
+            st.caption(
+                "Candidate match scores from recent resume screenings"
+            )
+
+            if recent_screenings:
+
+                activity_data = pd.DataFrame([
+                    {
+                        "Screening": index,
+                        "Match Score": max(
+                            0,
+                            min(float(row[3] or 0), 100)
+                        )
+                    }
+                    for index, row in enumerate(
+                        reversed(recent_screenings),
+                        start=1
+                    )
+                ])
+
+                st.line_chart(
+                    activity_data,
+                    x="Screening",
+                    y="Match Score",
+                    height=280
+                )
+
+            else:
+
+                st.info(
+                    "Your screening performance chart will appear here "
+                    "after the first resume analysis."
+                )
+
+    with insights_col:
+
+        with st.container(border=True):
+
+            st.markdown("#### ✦ AI Insights")
+            st.caption("Your recruitment workspace")
+
+            st.html(f"""
+            <div style="
+                background:rgba(124,58,237,0.12);
+                border:1px solid rgba(167,139,250,0.20);
+                border-radius:13px;
+                padding:15px;
+                margin:12px 0;
+            ">
+                <div style="color:#A78BFA;font-size:11px;font-weight:800;">
+                    JOB DESCRIPTIONS
+                </div>
+                <div style="color:white;font-size:25px;font-weight:800;margin-top:5px;">
+                    {len(saved_jobs)}
+                </div>
+                <div style="color:#94A3B8;font-size:11px;">
+                    Recruitment roles created
+                </div>
+            </div>
+
+            <div style="
+                background:rgba(34,197,94,0.08);
+                border:1px solid rgba(34,197,94,0.20);
+                border-radius:13px;
+                padding:15px;
+                margin:12px 0;
+            ">
+                <div style="color:#86EFAC;font-size:11px;font-weight:800;">
+                    SYSTEM STATUS
+                </div>
+                <div style="color:white;font-size:17px;font-weight:750;margin-top:7px;">
+                    ● All systems ready
+                </div>
+                <div style="color:#94A3B8;font-size:11px;margin-top:5px;">
+                    Resume parsing and matching workspace
+                </div>
+            </div>
+            """)
+
+    # RECENT SCREENING ACTIVITY
+
+    st.markdown("")
+    st.markdown("### Recent Screening Activity")
+
+    if recent_screenings:
+
+        for row in recent_screenings[:5]:
+
+            candidate_name = html.escape(
+                str(row[1] or "Unknown")
+            )
+
+            resume_name = html.escape(
+                str(row[2] or "Resume")
+            )
+
+            match_score = float(row[3] or 0)
+
+            if match_score >= 75:
+                score_color = "#86EFAC"
+                score_label = "Strong Match"
+
+            elif match_score >= 50:
+                score_color = "#FCD34D"
+                score_label = "Moderate Match"
+
+            else:
+                score_color = "#FCA5A5"
+                score_label = "Low Match"
+
+            with st.container(border=True):
+
+                candidate_col, score_col = st.columns(
+                    [3, 1],
+                    vertical_alignment="center"
+                )
+
+                with candidate_col:
+
+                    st.html(f"""
+                    <div style="display:flex;align-items:center;gap:13px;">
+                        <div style="
+                            width:43px;
+                            height:43px;
+                            min-width:43px;
+                            border-radius:13px;
+                            display:flex;
+                            align-items:center;
+                            justify-content:center;
+                            background:linear-gradient(135deg,#7C3AED,#4F46E5);
+                            color:white;
+                            font-size:17px;
+                            font-weight:800;
+                        ">
+                            {candidate_name[0].upper()}
+                        </div>
+
+                        <div>
+                            <div style="
+                                color:#F8FAFC;
+                                font-size:14px;
+                                font-weight:750;
+                            ">
+                                {candidate_name}
+                            </div>
+
+                            <div style="
+                                color:#94A3B8;
+                                font-size:11px;
+                                margin-top:4px;
+                            ">
+                                {resume_name}
+                            </div>
+                        </div>
+                    </div>
+                    """)
+
+                with score_col:
+
+                    st.html(f"""
+                    <div style="text-align:right;">
+                        <div style="
+                            color:{score_color};
+                            font-size:22px;
+                            font-weight:850;
+                        ">
+                            {match_score:.1f}%
+                        </div>
+
+                        <div style="
+                            color:{score_color};
+                            font-size:10px;
+                            font-weight:700;
+                        ">
+                            {score_label}
+                        </div>
+                    </div>
+                    """)
+
+    else:
+
+        with st.container(border=True):
+            st.info(
+                "No candidates screened yet. Your recent candidate "
+                "activity will appear here."
+            )
+
+    # DASHBOARD QUICK ACTIONS
+
+    st.markdown("")
+    st.markdown("### Quick Actions")
+
+    action1, action2, action3 = st.columns(3)
+
+    with action1:
+
+        with st.container(border=True):
+
+            st.markdown("#### 📄 Resume Screening")
+            st.caption("Analyze a new candidate resume.")
+
+            st.button(
+                "Open Screening",
+                key="dashboard_screening",
+                use_container_width=True,
+                on_click=navigate_to,
+                args=("Resume Screening",)
+            )
+
+    with action2:
+
+        with st.container(border=True):
+
+            st.markdown("#### 💼 Job Management")
+            st.caption("Create a recruitment job description.")
+
+            st.button(
+                "Manage Jobs",
+                key="dashboard_jobs",
+                use_container_width=True,
+                on_click=navigate_to,
+                args=("Job Management",)
+            )
+
+    with action3:
+
+        with st.container(border=True):
+
+            st.markdown("#### 🏆 Candidate Ranking")
+            st.caption("Compare and discover top candidates.")
+
+            st.button(
+                "View Rankings",
+                key="dashboard_ranking",
+                use_container_width=True,
+                on_click=navigate_to,
+                args=("Candidate Ranking",)
+            )
+
+
+# ==========================================
+# JOB MANAGEMENT PAGE
+# ==========================================
+
+elif selected_page == "Job Management":
+
+    render_page_header(
+        "Recruitment Workspace",
+        "Job Management",
+        "Create, organize and manage job descriptions for candidate screening."
+    )
+
+    st.markdown("### ✦ Create New Job")
+
+    with st.container(border=True):
+
+        with st.form("job_management_form"):
+
+            job_title = st.text_input(
+                "Job Title",
+                placeholder="Example: Python Developer"
+            )
+
+            experience_col1, experience_col2 = st.columns(2)
+
+            with experience_col1:
+
+                min_experience = st.number_input(
+                    "Minimum Experience (Years)",
+                    min_value=0,
+                    max_value=50,
+                    value=1,
+                    step=1
+                )
+
+            with experience_col2:
+
+                max_experience = st.number_input(
+                    "Maximum Experience (Years)",
+                    min_value=0,
+                    max_value=50,
+                    value=3,
+                    step=1
+                )
+
+            new_job_description = st.text_area(
+                "Job Description",
+                placeholder=(
+                    "Paste the complete job description here...\n\n"
+                    "Example:\n"
+                    "Required skills: Python, SQL, PostgreSQL, "
+                    "Data Analysis..."
+                ),
+                height=220
+            )
+
+            save_job_button = st.form_submit_button(
+                "＋ Save Job Description",
+                use_container_width=True,
+                type="primary"
+            )
+
+            if save_job_button:
+
+                if not job_title.strip():
+
+                    st.error("Please enter a job title.")
+
+                elif not new_job_description.strip():
+
+                    st.error("Please enter the job description.")
+
+                elif max_experience < min_experience:
+
+                    st.error(
+                        "Maximum experience cannot be less than "
+                        "minimum experience."
+                    )
+
+                else:
+
+                    try:
+
+                        save_job_description(
+                            job_title.strip(),
+                            int(min_experience),
+                            int(max_experience),
+                            new_job_description.strip()
+                        )
+
+                        st.success(
+                            "Job description saved successfully!"
+                        )
+
+                        st.rerun()
+
+                    except Exception as error:
+
+                        st.error(
+                            f"Unable to save job description: {error}"
+                        )
+
+    # SAVED JOBS
+
+    st.markdown("")
+    st.markdown("### 📋 Saved Job Descriptions")
+
+    if saved_jobs:
+
+        st.caption(
+            f"{len(saved_jobs)} recruitment roles available"
+        )
+
+        for job in saved_jobs:
+
+            with st.container(border=True):
+
+                job_col, experience_col = st.columns(
+                    [3, 1],
+                    vertical_alignment="center"
+                )
+
+                with job_col:
+
+                    st.markdown(f"#### 💼 {job[1]}")
+
+                    st.caption(
+                        f"Job ID: {job[0]}"
+                    )
+
+                with experience_col:
+
+                    st.metric(
+                        "Experience",
+                        f"{job[2]}–{job[3]} Years"
+                    )
+
+                with st.expander("View Job Description"):
+
+                    st.write(job[5])
+
+    else:
+
+        st.info(
+            "No job descriptions found. Create your first job above."
+        )
+
+
+# ==========================================
+# RESUME SCREENING PAGE
+# ==========================================
+
+elif selected_page == "Resume Screening":
+
+    render_page_header(
+        "AI Intelligence",
+        "Resume Screening",
+        "Upload candidate resumes and discover their compatibility with your job requirements."
+    )
+
+    st.markdown("### 📂 Upload Candidate Resume")
+
+    upload_col, job_col = st.columns(2, gap="large")
+
+    with upload_col:
+
+        with st.container(border=True):
+
+            st.markdown("#### 📄 Resume Upload")
+
+            uploaded_file = st.file_uploader(
+                "Upload resume in PDF format",
+                type=["pdf"],
+                help="Upload a candidate's PDF resume.",
+                key="resume_upload"
+            )
+
+            st.caption("Supported format: PDF")
+
+            if uploaded_file:
+                st.success(f"Selected: {uploaded_file.name}")
+
+    with job_col:
+
+        with st.container(border=True):
+
+            st.markdown("#### 💼 Select Job Description")
+
+            selected_job = render_job_selector("selected_job")
+
+            if selected_job:
+
+                selected_job_id = selected_job[0]
+                job_description = selected_job[5]
+
+                st.success(
+                    f"Selected Job: {selected_job[1]}"
+                )
+
+                with st.expander("👁️ View Job Description"):
+                    st.write(job_description)
+
+            else:
+
+                selected_job_id = None
+                job_description = ""
+
+    st.markdown("")
+
+    analyze_button = st.button(
+        "✨ Analyze Resume",
+        use_container_width=True,
+        type="primary",
+        disabled=not saved_jobs
+    )
+
+    if analyze_button:
+
+        if uploaded_file is None:
+
+            st.warning("Please upload a PDF resume first.")
+
+        elif selected_job is None:
+
+            st.warning("Please select a saved job description.")
+
+        elif not job_description.strip():
+
+            st.warning("The selected job description is empty.")
+
+        else:
+
+            try:
+
+                with st.spinner(
+                    "AI is analyzing the candidate resume..."
+                ):
+
+                    # STEP 1: SAVE UPLOADED PDF
+
+                    upload_folder = os.path.join(
+                        "data",
+                        "resumes",
+                        "uploads"
+                    )
+
+                    os.makedirs(upload_folder, exist_ok=True)
+
+                    unique_file_name = (
+                        str(uuid.uuid4())
+                        + "_"
+                        + os.path.basename(uploaded_file.name)
+                    )
+
+                    file_path = os.path.join(
+                        upload_folder,
+                        unique_file_name
+                    )
+
+                    with open(file_path, "wb") as file:
+                        file.write(uploaded_file.getbuffer())
+
+                    # STEP 2: EXTRACT RESUME TEXT
+
+                    resume_text = extract_resume_text(file_path)
+
+                    cleaned_text = clean_resume_text(resume_text)
+
+                    # STEP 3: EXTRACT CANDIDATE DETAILS AND SKILLS
+
+                    candidate_details = extract_candidate_details(
+                        resume_text
+                    )
+
+                    candidate_skills = extract_skills(cleaned_text)
+
+                    required_skills = extract_skills(
+                        job_description
+                    )
+
+                    # STEP 4: VALIDATE INFORMATION
+
+                    required_fields = [
+                        "full_name",
+                        "email",
+                        "phone",
+                        "location",
+                        "experience_years",
+                        "education"
+                    ]
+
+                    missing_fields = [
+                        field
+                        for field in required_fields
+                        if (
+                            candidate_details.get(field) is None
+                            or candidate_details.get(field) == ""
+                        )
+                    ]
+
+                    if missing_fields:
+
+                        st.error(
+                            "Some candidate details could not be "
+                            "extracted: "
+                            + ", ".join(missing_fields)
+                        )
+
+                        st.stop()
+
+                    if not candidate_skills:
+
+                        st.warning(
+                            "No recognized skills were found in this resume."
+                        )
+
+                        st.stop()
+
+                    if not required_skills:
+
+                        st.warning(
+                            "No recognized skills were found in "
+                            "the selected job description."
+                        )
+
+                        st.stop()
+
+                    # STEP 5: SAVE CANDIDATE
+
+                    candidate_id = save_candidate(
+                        candidate_details["full_name"],
+                        candidate_details["email"],
+                        candidate_details["phone"],
+                        candidate_details["location"],
+                        candidate_details["experience_years"],
+                        candidate_details["education"]
+                    )
+
+                    if candidate_id is None:
+                        st.error("Unable to save candidate.")
+                        st.stop()
+
+                    # STEP 6: SAVE RESUME
+
+                    resume_id = save_resume(
+                        candidate_id,
+                        uploaded_file.name,
+                        file_path,
+                        "PDF",
+                        cleaned_text
+                    )
+
+                    if resume_id is None:
+                        st.error("Unable to save resume.")
+                        st.stop()
+
+                    # STEP 7: SAVE CANDIDATE SKILLS
+
+                    save_candidate_skills(
+                        candidate_id,
+                        candidate_skills
+                    )
+
+                    # STEP 8: CALCULATE MATCH SCORE
+
+                    (
+                        match_percentage,
+                        matched_skills,
+                        missing_skills
+                    ) = calculate_skill_match(
+                        candidate_skills,
+                        required_skills
+                    )
+
+                    # STEP 9: SAVE MATCH RESULT
+
+                    match_id = save_match_result(
+                        candidate_id,
+                        resume_id,
+                        match_percentage,
+                        matched_skills,
+                        missing_skills,
+                        job_id=selected_job_id
+                    )
+
+                    if match_id is None:
+                        st.error("Unable to save match result.")
+                        st.stop()
+
+                # SCREENING RESULTS
+
+                st.success(
+                    "Resume analyzed and saved successfully!"
+                )
+
+                st.markdown("---")
+                st.markdown("## 🎯 Screening Results")
+
+                st.caption(
+                    f"Selected Job: {selected_job[1]}"
+                )
+
+                score = max(
+                    0,
+                    min(float(match_percentage), 100)
+                )
+
+                circumference = 314.16
+                dash_value = score / 100 * circumference
+
+                score_col, analysis_col = st.columns(
+                    [1, 2],
+                    gap="large"
+                )
+
+                with score_col:
+
+                    st.html(f"""
+                    <div style="
+                        background:linear-gradient(
+                            145deg,
+                            rgba(124,58,237,0.22),
+                            rgba(30,41,75,0.65)
+                        );
+                        border:1px solid rgba(167,139,250,0.35);
+                        border-radius:22px;
+                        padding:25px 15px;
+                        text-align:center;
+                    ">
+
+                        <div style="
+                            color:#A78BFA;
+                            font-size:13px;
+                            font-weight:700;
+                            letter-spacing:1.5px;
+                            margin-bottom:18px;
+                        ">
+                            RESUME MATCH SCORE
+                        </div>
+
+                        <div style="
+                            position:relative;
+                            width:190px;
+                            height:190px;
+                            margin:auto;
+                        ">
+
+                            <svg width="190" height="190"
+                                 viewBox="0 0 120 120">
+
+                                <circle
+                                    cx="60" cy="60" r="50"
+                                    fill="none"
+                                    stroke="rgba(148,163,184,0.15)"
+                                    stroke-width="9"
+                                />
+
+                                <circle
+                                    cx="60" cy="60" r="50"
+                                    fill="none"
+                                    stroke="#A78BFA"
+                                    stroke-width="9"
+                                    stroke-linecap="round"
+                                    stroke-dasharray="{dash_value:.2f} {circumference:.2f}"
+                                    transform="rotate(-90 60 60)"
+                                />
+
+                            </svg>
+
+                            <div style="
+                                position:absolute;
+                                inset:0;
+                                display:flex;
+                                flex-direction:column;
+                                justify-content:center;
+                                align-items:center;
+                            ">
+
+                                <div style="
+                                    color:white;
+                                    font-size:34px;
+                                    font-weight:850;
+                                ">
+                                    {score:.2f}%
+                                </div>
+
+                                <div style="
+                                    color:#94A3B8;
+                                    font-size:11px;
+                                ">
+                                    MATCH SCORE
+                                </div>
+
+                            </div>
+                        </div>
+
+                        <div style="
+                            color:#94A3B8;
+                            font-size:12px;
+                            margin-top:15px;
+                        ">
+                            Candidate skills compatibility
+                        </div>
+
+                    </div>
+                    """)
+
+                with analysis_col:
+
+                    with st.container(border=True):
+
+                        st.markdown("### 📈 Match Analysis")
+
+                        st.progress(score / 100)
+
+                        metric1, metric2 = st.columns(2)
+
+                        metric1.metric(
+                            "Matched Skills",
+                            len(matched_skills)
+                        )
+
+                        metric2.metric(
+                            "Missing Skills",
+                            len(missing_skills)
+                        )
+
+                        st.caption(
+                            "Score is calculated using recognized skills "
+                            "found in the resume and selected job description."
+                        )
+
+                # CANDIDATE INFORMATION
+
+                st.markdown("### 👤 Candidate Information")
+
+                with st.container(border=True):
+
+                    info_col1, info_col2 = st.columns(2)
+
+                    with info_col1:
+
+                        st.write(
+                            "**Full Name:**",
+                            candidate_details["full_name"]
+                        )
+
+                        st.write(
+                            "**Email:**",
+                            candidate_details["email"]
+                        )
+
+                        st.write(
+                            "**Phone:**",
+                            candidate_details["phone"]
+                        )
+
+                    with info_col2:
+
+                        st.write(
+                            "**Location:**",
+                            candidate_details["location"]
+                        )
+
+                        st.write(
+                            "**Experience:**",
+                            f'{candidate_details["experience_years"]} years'
+                        )
+
+                        st.write(
+                            "**Education:**",
+                            candidate_details["education"]
+                        )
+
+                # SKILL ANALYSIS
+
+                st.markdown("### 🧠 Skill Analysis")
+
+                skill_col1, skill_col2 = st.columns(2)
+
+                with skill_col1:
+
+                    with st.container(border=True):
+
+                        st.markdown("#### 🟢 Matched Skills")
+
+                        if matched_skills:
+
+                            for skill in matched_skills:
+
+                                safe_skill = html.escape(str(skill))
+
+                                st.html(f"""
+                                <div style="
+                                    background:rgba(34,197,94,0.10);
+                                    border:1px solid rgba(34,197,94,0.25);
+                                    padding:10px 13px;
+                                    border-radius:10px;
+                                    margin-bottom:8px;
+                                    color:#86EFAC;
+                                    font-weight:600;
+                                ">
+                                    ✓ {safe_skill}
+                                </div>
+                                """)
+
+                        else:
+
+                            st.info("No matching skills found.")
+
+                with skill_col2:
+
+                    with st.container(border=True):
+
+                        st.markdown("#### 🔴 Missing Skills")
+
+                        if missing_skills:
+
+                            for skill in missing_skills:
+
+                                safe_skill = html.escape(str(skill))
+
+                                st.html(f"""
+                                <div style="
+                                    background:rgba(239,68,68,0.10);
+                                    border:1px solid rgba(239,68,68,0.25);
+                                    padding:10px 13px;
+                                    border-radius:10px;
+                                    margin-bottom:8px;
+                                    color:#FCA5A5;
+                                    font-weight:600;
+                                ">
+                                    ✕ {safe_skill}
+                                </div>
+                                """)
+
+                        else:
+
+                            st.success("All required skills matched!")
+
+                # EXTRACTED SKILLS
+
+                with st.expander("🧠 View all extracted skills"):
+
+                    st.write("**Candidate Skills:**")
+                    st.write(", ".join(candidate_skills))
+
+                    st.write("**Job Required Skills:**")
+                    st.write(", ".join(required_skills))
+
+                # DATABASE RECORDS
+
+                with st.expander("🗄️ Database Record Information"):
+
+                    st.write("Candidate ID:", candidate_id)
+                    st.write("Resume ID:", resume_id)
+                    st.write("Match ID:", match_id)
+                    st.write("Job ID:", selected_job_id)
+
+            except Exception as error:
+
+                st.error(f"Something went wrong: {error}")
+
+                st.info(
+                    "Please check the terminal for more details."
+                )
+
+
+# ==========================================
+# CANDIDATE RANKING PAGE
+# ==========================================
+
+elif selected_page == "Candidate Ranking":
+
+    render_page_header(
+        "Recruitment Analytics",
+        "Candidate Ranking",
+        "Compare candidate compatibility, explore skill gaps and identify top talent."
+    )
+
+    comparison_job = render_job_selector("comparison_job")
+
+    if comparison_job:
+
+        st.markdown("")
+
+        if st.button(
+            "🔍 Compare Candidates",
+            use_container_width=True,
+            type="primary",
+            key="compare_candidates_button"
+        ):
+
+            comparison_results = get_candidates_by_job(
+                comparison_job[0]
+            )
+
+            if comparison_results:
+
+                st.success(
+                    f"{len(comparison_results)} candidate records found!"
+                )
+
+                rank_badges = {
+                    1: "🥇",
+                    2: "🥈",
+                    3: "🥉"
+                }
+
+                leaderboard = []
+
+                for rank, candidate in enumerate(
+                    comparison_results,
+                    start=1
+                ):
+
+                    leaderboard.append({
+                        "Rank": rank_badges.get(
+                            rank,
+                            f"#{rank}"
+                        ),
+                        "Candidate": candidate[2],
+                        "Match Score": float(candidate[6] or 0),
+                        "Experience": candidate[4],
+                        "Education": candidate[5] or "N/A"
+                    })
+
+                leaderboard_df = pd.DataFrame(leaderboard)
+
+                # TOP CANDIDATE
+
+                top_candidate = comparison_results[0]
+
+                top_name = html.escape(
+                    str(top_candidate[2])
+                )
+
+                top_score = float(top_candidate[6] or 0)
+                top_experience = top_candidate[4]
+
+                st.markdown("### 🏆 Top Candidate")
+
+                with st.container(border=True):
+
+                    st.html(f"""
+                    <div style="
+                        background:linear-gradient(
+                            135deg,
+                            rgba(124,58,237,0.20),
+                            rgba(30,41,75,0.50)
+                        );
+                        border:1px solid rgba(167,139,250,0.4);
+                        border-radius:18px;
+                        padding:22px;
+                    ">
+
+                        <div style="
+                            color:#FBBF24;
+                            font-size:14px;
+                            font-weight:700;
+                            letter-spacing:1px;
+                        ">
+                            🥇 TOP MATCH
+                        </div>
+
+                        <div style="
+                            color:white;
+                            font-size:26px;
+                            font-weight:800;
+                            margin-top:8px;
+                        ">
+                            {top_name}
+                        </div>
+
+                        <div style="
+                            color:#A78BFA;
+                            font-size:15px;
+                            margin-top:5px;
+                        ">
+                            {top_score:.2f}% Compatibility
+                        </div>
+
+                    </div>
+                    """)
+
+                    top_col1, top_col2, top_col3 = st.columns(3)
+
+                    top_col1.metric(
+                        "Match Score",
+                        f"{top_score:.2f}%"
+                    )
+
+                    top_col2.metric(
+                        "Experience",
+                        f"{top_experience} Years"
+                    )
+
+                    top_col3.metric(
+                        "Candidate ID",
+                        top_candidate[1]
+                    )
+
+                # LEADERBOARD
+
+                st.markdown("### 📊 Candidate Leaderboard")
+
+                st.dataframe(
+                    leaderboard_df,
+                    use_container_width=True,
+                    hide_index=True
+                )
+
+                # MATCH SCORE CHART
+
+                st.markdown(
+                    "### 📈 Candidate Match Score Comparison"
+                )
+
+                score_chart_data = pd.DataFrame({
+                    "Candidate": [
+                        str(candidate[2])
+                        for candidate in comparison_results
+                    ],
+                    "Match Score": [
+                        float(candidate[6] or 0)
+                        for candidate in comparison_results
+                    ]
+                })
+
+                score_chart_data = score_chart_data.set_index(
+                    "Candidate"
+                )
+
+                st.bar_chart(
+                    score_chart_data,
+                    y="Match Score",
+                    height=350
+                )
+
+                # SKILL COMPARISON
+
+                st.markdown("### 🧠 Candidate Skills Comparison")
+
+                skill_chart_rows = []
+
+                for candidate in comparison_results:
+
+                    skill_chart_rows.append({
+                        "Candidate": str(candidate[2]),
+                        "Matched Skills": len(candidate[7] or []),
+                        "Missing Skills": len(candidate[8] or [])
+                    })
+
+                skill_chart_data = pd.DataFrame(
+                    skill_chart_rows
+                ).set_index("Candidate")
+
+                st.bar_chart(
+                    skill_chart_data,
+                    height=350
+                )
+
+                # CSV REPORT
+
+                st.markdown("### 📥 Download Candidate Report")
+
+                csv_data = leaderboard_df.to_csv(
+                    index=False
+                ).encode("utf-8")
+
+                st.download_button(
+                    label="⬇️ Download Candidate Ranking CSV",
+                    data=csv_data,
+                    file_name=(
+                        f"TalentAI_Candidate_Report_"
+                        f"{comparison_job[0]}.csv"
+                    ),
+                    mime="text/csv",
+                    use_container_width=True
+                )
+
+                # CANDIDATE DETAILS
+
+                st.markdown("### 👥 Candidate Details")
+
+                for rank, candidate in enumerate(
+                    comparison_results,
+                    start=1
+                ):
+
+                    (
+                        match_id,
+                        candidate_id,
+                        full_name,
+                        email,
+                        experience,
+                        education,
+                        match_percentage,
+                        matched_skills,
+                        missing_skills,
+                        created_at
+                    ) = candidate
+
+                    rank_icon = rank_badges.get(
+                        rank,
+                        f"#{rank}"
+                    )
+
+                    with st.expander(
+                        f"{rank_icon} {full_name} — "
+                        f"{float(match_percentage or 0):.2f}% Match",
+                        expanded=(rank == 1)
+                    ):
+
+                        col1, col2, col3 = st.columns(3)
+
+                        col1.metric(
+                            "Match Score",
+                            f"{float(match_percentage or 0):.2f}%"
+                        )
+
+                        col2.metric(
+                            "Experience",
+                            f"{experience} Years"
+                        )
+
+                        col3.metric(
+                            "Candidate ID",
+                            candidate_id
+                        )
+
+                        st.write(f"**Email:** {email}")
+                        st.write(f"**Education:** {education or 'N/A'}")
+
+                        st.write("🟢 **Matched Skills**")
+
+                        st.write(
+                            ", ".join(matched_skills or [])
+                            or "No matched skills"
+                        )
+
+                        st.write("🔴 **Missing Skills**")
+
+                        st.write(
+                            ", ".join(missing_skills or [])
+                            or "No missing skills"
+                        )
+
+                        st.caption(
+                            f"Screening Date: {created_at}"
+                        )
+
+            else:
+
+                st.warning(
+                    "No candidates have been screened for this job yet."
+                )
+
+
+# ==========================================
+# SCREENING HISTORY PAGE
+# ==========================================
+
+elif selected_page == "Screening History":
+
+    render_page_header(
+        "Activity Center",
+        "Screening History",
+        "Review previously analyzed resumes, candidate match scores and skill comparisons."
+    )
+
+    recent_screenings = get_recent_screenings(limit=10) or []
+
+    st.metric(
+        "Recent Screening Records",
+        len(recent_screenings)
+    )
+
+    if recent_screenings:
+
+        history_table = []
+
+        for screening in recent_screenings:
+
+            history_table.append({
+                "Candidate": screening[1],
+                "Resume": screening[2],
+                "Match Score": float(screening[3] or 0),
+                "Screened On": (
+                    screening[6].strftime("%d %b %Y, %I:%M %p")
+                    if screening[6] else "N/A"
+                )
+            })
+
+        st.markdown("### 📋 Screening Records")
+
+        st.dataframe(
+            pd.DataFrame(history_table),
+            use_container_width=True,
+            hide_index=True
+        )
+
+        st.markdown("### 🔍 Screening Details")
+
+        for screening in recent_screenings:
+
+            match_id = screening[0]
+            candidate_name = screening[1]
+            resume_name = screening[2]
+            match_score = float(screening[3] or 0)
+            matched_skills = screening[4] or []
+            missing_skills = screening[5] or []
+            screened_on = screening[6]
+
+            with st.expander(
+                f"👤 {candidate_name} | {match_score:.2f}% Match"
+            ):
+
+                detail_col1, detail_col2 = st.columns(2)
+
+                detail_col1.metric(
+                    "Match Score",
+                    f"{match_score:.2f}%"
+                )
+
+                detail_col2.write(
+                    f"**Match ID:** {match_id}"
+                )
+
+                st.write("**Resume:**", resume_name)
+
+                st.write(
+                    "**Matched Skills:**",
+                    ", ".join(matched_skills) or "None"
+                )
+
+                st.write(
+                    "**Missing Skills:**",
+                    ", ".join(missing_skills) or "None"
+                )
+
+                st.caption(
+                    screened_on.strftime("%d %b %Y, %I:%M %p")
+                    if screened_on
+                    else "Screening date unavailable"
+                )
+
+    else:
+
+        st.info("No screening records found yet.")
+
+
+# ==========================================
+# FOOTER
+# ==========================================
+
+st.markdown("---")
+
+st.markdown(
+    """
+    <div style="
+        text-align:center;
+        color:#64748B;
+        font-size:11px;
+        padding:10px;
+    ">
+        TALENTAI • AI-POWERED RESUME INTELLIGENCE
+        <br>
+        Intelligent Recruitment Workspace
+    </div>
+    """,
+    unsafe_allow_html=True
+)

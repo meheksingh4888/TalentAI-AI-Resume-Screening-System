@@ -1,0 +1,7 @@
+
+streamlit
+pypdf
+pandas==2.2.3
+scikit-learn
+python-dotenv
+psycopg[binary]
